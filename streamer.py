@@ -21,9 +21,9 @@ class Streamer:
         """Note that data_bytes can be larger than one packet."""
         # Your code goes here!  The code below should be changed!
         message = []
-        while len(data_bytes) >= 1472:
-            message.append(data_bytes[:1472])
-            data_bytes = data_bytes[1472:]
+        while len(data_bytes) >= 1468:
+            message.append(data_bytes[:1468])
+            data_bytes = data_bytes[1468:]
         if len(data_bytes) > 0:
             message.append(data_bytes)
         for i in range(len(message)):
