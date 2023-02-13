@@ -5,6 +5,11 @@ from socket import INADDR_ANY
 import struct
 from concurrent.futures import ThreadPoolExecutor
 import time
+<<<<<<< Updated upstream
+=======
+import hashlib
+import threading
+>>>>>>> Stashed changes
 
 
 class Streamer:
@@ -59,10 +64,58 @@ class Streamer:
         self.fin_ack = False
         self.fin_recv = False
         self.fin_sent = False
+        self.ack_seq = 0
+        self.lock = threading.Lock()
+        self.ack_time = 0
         self.no_ack = []
         executor = ThreadPoolExecutor(max_workers=1)
         executor.submit(self.listener)
 
+<<<<<<< Updated upstream
+=======
+    def hash_send(self, packet):
+        raw = hashlib.sha1(packet).digest() + packet
+        self.socket.sendto(raw, (self.dst_ip, self.dst_port))
+
+    def listener(self):
+        while not self.closed:
+            try:
+                raw, addr = self.socket.recvfrom()
+                check = raw[:20]
+                data = raw[20:]
+                if check == hashlib.sha1(data).digest() and data:
+                    header = struct.unpack('i??', data[:self.header_size])
+                    is_ack = header[1]
+                    is_fin = header[2]
+                    if is_ack:
+                        if is_fin:  # if FIN ACK, set fin_ack
+                            self.fin_ack = True
+                        else:  # if ACK
+                            if header[0] != self.ack_seq:
+                                self.ack_time = time.time()
+                                self.ack_seq = header[0]
+                            self.no_ack = [packet for packet in self.no_ack if packet[0] > self.ack_seq]
+                    elif is_fin: # if FIN, send FIN ACK and set fin_recv
+                        self.fin_recv = True
+                        header = struct.pack('i??', 0, True, True)
+                        packet = header + "ACK".encode()
+                        self.hash_send(packet)
+                    else:
+                        recv_seq = header[0]
+                        recv_log = [recv_seq, data[self.header_size:]]
+                        header = struct.pack('i??', self.next_seq, True, False)  # int = 4 bytes, bool = 1 byte
+                        packet = header + "ACK".encode()
+                        self.hash_send(packet)
+                        print(f"received {recv_seq}, sent ACK for {self.next_seq}")
+                        if recv_seq == self.next_seq:
+                            with self.lock:
+                                self.next_seq += 1
+                                self.receive_buffer.append(recv_log)
+            except Exception as e:
+                print("listener died!")
+                print(e)
+
+>>>>>>> Stashed changes
     def send(self, data_bytes: bytes) -> None:
         """Note that data_bytes can be larger than one packet."""
         message = []
@@ -74,12 +127,12 @@ class Streamer:
         if len(data_bytes) > 0:
             message.append(data_bytes)
         packets = []
-        message_acks = []
-        """Send packets and record time sent"""
+        """Send packets"""
         for i in range(len(message)):
             header = struct.pack('i??', self.sent_seq + i, False, False)  # int = 4 bytes, bool = 1 byte
             packet = header + message[i]
             packets.append(packet)
+<<<<<<< Updated upstream
             self.no_ack.append(self.sent_seq + i + 1)
             self.socket.sendto(packet, (self.dst_ip, self.dst_port))
             message_acks.append([self.sent_seq + i + 1, time.time()])
@@ -91,23 +144,27 @@ class Streamer:
                     i[1] = time.time()
             time.sleep(0.01)
         """Remove ACKs of completed messages from self.acks"""
+=======
+            self.hash_send(packet)
+            self.no_ack.append([self.sent_seq + i, packet])
+        """Check if ACK received within timeout interval"""
+        if time.time() - self.ack_time > 0.05:
+            for pair in self.no_ack:
+                self.hash_send(pair[1])
+                print(f"retrying for {pair[1][0]}")
+            self.ack_time = time.time()
+>>>>>>> Stashed changes
         self.sent_seq += len(message)
 
     def recv(self) -> bytes:
         """Blocks (waits) if no data is ready to be read from the connection."""
         """While buffer empty or gap at beginning of buffer"""
-        while len(self.receive_buffer) == 0 or self.receive_buffer[0][0] != self.next_seq:
+        while len(self.receive_buffer) == 0:
             continue
-        i = 0
-        message = b""
-        """While i's seq # is 1 more than i-1's seq #"""
-        while i != len(self.receive_buffer) and (
-                i == 0 or self.receive_buffer[i][0] == self.receive_buffer[i - 1][0] + 1):
-            message += self.receive_buffer[i][1]
-            i += 1
-        self.receive_buffer = self.receive_buffer[i+1:]
-        self.next_seq += i
-        return message
+        with self.lock:
+            message = self.receive_buffer[0][1]
+            self.receive_buffer.pop(0)
+            return message
 
     def close(self) -> None:
         """Cleans up. It should block (wait) until the Streamer is done with all
