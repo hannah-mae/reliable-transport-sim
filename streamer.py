@@ -22,7 +22,8 @@ class Streamer:
                             self.fin_ack = True
                         else:  # if ACK
                             ack_seq = header[0]
-                            self.acks.append(ack_seq)
+                            if ack_seq in self.no_ack:
+                                self.no_ack.remove(ack_seq)
                     elif is_fin: # if FIN, send FIN ACK and set fin_recv
                         self.fin_recv = True
                         header = struct.pack('i??', 0, True, True)
@@ -53,12 +54,12 @@ class Streamer:
         self.receive_buffer = []  # received packets after first gap [seq, data]
         self.sent_seq = 0  # all packets up to this number have been sent
         self.next_seq = 0  # lowest seq not yet received
-        self.acks = []  # sent packets that have received ACKs before send finishes
         self.closed = False
         self.header_size = 6
         self.fin_ack = False
         self.fin_recv = False
         self.fin_sent = False
+        self.no_ack = []
         executor = ThreadPoolExecutor(max_workers=1)
         executor.submit(self.listener)
 
@@ -72,25 +73,24 @@ class Streamer:
             data_bytes = data_bytes[max_packet_size:]
         if len(data_bytes) > 0:
             message.append(data_bytes)
-        message_acks = [[0, 0] for i in range(len(message))]
-        packets = [b"" for i in range(len(message))]
+        packets = []
+        message_acks = []
         """Send packets and record time sent"""
         for i in range(len(message)):
             header = struct.pack('i??', self.sent_seq + i, False, False)  # int = 4 bytes, bool = 1 byte
             packet = header + message[i]
-            packets[i] = packet
+            packets.append(packet)
+            self.no_ack.append(self.sent_seq + i + 1)
             self.socket.sendto(packet, (self.dst_ip, self.dst_port))
-            message_acks[i] = [self.sent_seq+i+1, time.time()]  # seq of expected ACK and time sent
+            message_acks.append([self.sent_seq + i + 1, time.time()])
         """Wait until all messages are ACKed"""
-        while not set([i[0] for i in message_acks]).issubset(self.acks):
-            no_ack = [i for i in message_acks if i[0] not in self.acks]
-            for i in no_ack:
+        while set([i[0] for i in message_acks]) & set(self.no_ack):
+            for i in [j for j in message_acks if j[0] in self.no_ack]:  # will have to change in part 5
                 if time.time()-i[1] > 0.25:
                     self.socket.sendto(packets[i[0]-self.sent_seq-1], (self.dst_ip, self.dst_port))
                     i[1] = time.time()
             time.sleep(0.01)
         """Remove ACKs of completed messages from self.acks"""
-        self.acks = [seq for seq in self.acks if seq not in [i[0] for i in message_acks]]
         self.sent_seq += len(message)
 
     def recv(self) -> bytes:
@@ -112,8 +112,7 @@ class Streamer:
     def close(self) -> None:
         """Cleans up. It should block (wait) until the Streamer is done with all
            the necessary ACKs and retransmissions"""
-        # your code goes here, especially after you add ACKs and retransmissions.
-        while len(self.acks) != 0:
+        while len(self.no_ack) != 0:
             continue
         """Send FIN when all sent data ACKed"""
         header = struct.pack('i??', 0, False, True)  # int = 4 bytes, bool = 1 byte
