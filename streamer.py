@@ -6,6 +6,7 @@ import struct
 from concurrent.futures import ThreadPoolExecutor
 import time
 import hashlib
+import threading
 
 
 class Streamer:
@@ -26,8 +27,14 @@ class Streamer:
         self.fin_ack = False
         self.fin_recv = False
         self.fin_sent = False
+        self.ack_seq = 0
+        self.lock = threading.Lock()
+        self.ack_time = 0
         self.no_ack = []
-        executor = ThreadPoolExecutor(max_workers=1)
+        self.complete = False
+        self.window_size = 10
+        self.window = []
+        executor = ThreadPoolExecutor(max_workers=2)
         executor.submit(self.listener)
 
     def hash_send(self, packet):
@@ -48,9 +55,10 @@ class Streamer:
                         if is_fin:  # if FIN ACK, set fin_ack
                             self.fin_ack = True
                         else:  # if ACK
-                            ack_seq = header[0]
-                            if ack_seq in self.no_ack:
-                                self.no_ack.remove(ack_seq)
+                            if header[0] != self.ack_seq:
+                                self.ack_time = time.time()
+                                self.ack_seq = header[0]
+                            self.no_ack = [packet for packet in self.no_ack if packet[0] > self.ack_seq]
                     elif is_fin: # if FIN, send FIN ACK and set fin_recv
                         self.fin_recv = True
                         header = struct.pack('i??', 0, True, True)
@@ -59,13 +67,14 @@ class Streamer:
                     else:
                         recv_seq = header[0]
                         recv_log = [recv_seq, data[self.header_size:]]
-                        if recv_log not in self.receive_buffer and recv_seq >= self.next_seq:
-                            self.receive_buffer.append(recv_log)
-                        self.receive_buffer.sort(key=lambda x: x[0])
-                        header = struct.pack('i??', recv_seq+1, True, False)  # int = 4 bytes, bool = 1 byte
+                        header = struct.pack('i??', self.next_seq, True, False)  # int = 4 bytes, bool = 1 byte
                         packet = header + "ACK".encode()
                         self.hash_send(packet)
-                        # print(f"sent ack for {recv_seq}")
+                        # print(f"received {recv_seq}, sent ACK for {self.next_seq}")
+                        if recv_seq == self.next_seq:
+                            with self.lock:
+                                self.next_seq += 1
+                                self.receive_buffer.append(recv_log)
             except Exception as e:
                 print("listener died!")
                 print(e)
@@ -81,46 +90,37 @@ class Streamer:
         if len(data_bytes) > 0:
             message.append(data_bytes)
         packets = []
-        message_acks = []
-        """Send packets and record time sent"""
+        """Send packets"""
         for i in range(len(message)):
             header = struct.pack('i??', self.sent_seq + i, False, False)  # int = 4 bytes, bool = 1 byte
             packet = header + message[i]
             packets.append(packet)
-            self.no_ack.append(self.sent_seq + i + 1)
             self.hash_send(packet)
-            message_acks.append([self.sent_seq + i + 1, time.time()])
-        """Wait until all messages are ACKed"""
-        while set([i[0] for i in message_acks]) & set(self.no_ack):
-            for i in [j for j in message_acks if j[0] in self.no_ack]:
-                if time.time()-i[1] > 0.25:
-                    self.hash_send(packets[i[0]-self.sent_seq-1])
-                    i[1] = time.time()
-            time.sleep(0.01)
-        """Remove ACKs of completed messages from self.acks"""
+            self.no_ack.append([self.sent_seq + i, packet])
+        """Check if ACK received within timeout interval"""
+        if time.time() - self.ack_time > 0.25:
+            for pair in self.no_ack:
+                self.hash_send(pair[1])
+                print(f"retrying for {pair[1][0]}")
         self.sent_seq += len(message)
 
     def recv(self) -> bytes:
         """Blocks (waits) if no data is ready to be read from the connection."""
         """While buffer empty or gap at beginning of buffer"""
-        while len(self.receive_buffer) == 0 or self.receive_buffer[0][0] != self.next_seq:
+        while len(self.receive_buffer) == 0:
             continue
-        i = 0
-        message = b""
-        """While i's seq # is 1 more than i-1's seq #"""
-        while i != len(self.receive_buffer) and (
-                i == 0 or self.receive_buffer[i][0] == self.receive_buffer[i - 1][0] + 1):
-            message += self.receive_buffer[i][1]
-            i += 1
-        self.receive_buffer = self.receive_buffer[i+1:]
-        self.next_seq += i
-        return message
+        with self.lock:
+            message = self.receive_buffer[0][1]
+            self.receive_buffer.pop(0)
+            return message
 
     def close(self) -> None:
         """Cleans up. It should block (wait) until the Streamer is done with all
            the necessary ACKs and retransmissions"""
         while len(self.no_ack) != 0:
-            continue
+            for pair in self.no_ack:
+                self.hash_send(pair[1])
+                print(f"retrying for {pair[1][0]}")
         """Send FIN when all sent data ACKed"""
         header = struct.pack('i??', 0, False, True)  # int = 4 bytes, bool = 1 byte
         packet = header + "FIN".encode()
