@@ -11,40 +11,6 @@ import threading
 
 class Streamer:
 
-    def listener(self):
-        while not self.closed:
-            try:
-                data, addr = self.socket.recvfrom()
-                if data:
-                    header = struct.unpack('i??', data[:self.header_size])
-                    is_ack = header[1]
-                    is_fin = header[2]
-                    if is_ack:
-                        if is_fin:  # if FIN ACK, set fin_ack
-                            self.fin_ack = True
-                        else:  # if ACK
-                            ack_seq = header[0]
-                            if ack_seq in self.no_ack:
-                                self.no_ack.remove(ack_seq)
-                    elif is_fin: # if FIN, send FIN ACK and set fin_recv
-                        self.fin_recv = True
-                        header = struct.pack('i??', 0, True, True)
-                        packet = header + "ACK".encode()
-                        self.socket.sendto(packet, (self.dst_ip, self.dst_port))
-                    else:
-                        recv_seq = header[0]
-                        recv_log = [recv_seq, data[self.header_size:]]
-                        if recv_log not in self.receive_buffer and recv_seq >= self.next_seq:
-                            self.receive_buffer.append(recv_log)
-                        self.receive_buffer.sort(key=lambda x: x[0])
-                        header = struct.pack('i??', recv_seq+1, True, False)  # int = 4 bytes, bool = 1 byte
-                        packet = header + "ACK".encode()
-                        self.socket.sendto(packet, (self.dst_ip, self.dst_port))
-                        # print(f"sent ack for {recv_seq}")
-            except Exception as e:
-                print("listener died!")
-                print(e)
-
     def __init__(self, dst_ip, dst_port,
                  src_ip=INADDR_ANY, src_port=0):
         """Default values listen on all network interfaces, chooses a random source port,
@@ -65,7 +31,10 @@ class Streamer:
         self.lock = threading.Lock()
         self.ack_time = 0
         self.no_ack = []
-        executor = ThreadPoolExecutor(max_workers=1)
+        self.complete = False
+        self.window_size = 10
+        self.window = []
+        executor = ThreadPoolExecutor(max_workers=2)
         executor.submit(self.listener)
 
     def hash_send(self, packet):
@@ -101,7 +70,7 @@ class Streamer:
                         header = struct.pack('i??', self.next_seq, True, False)  # int = 4 bytes, bool = 1 byte
                         packet = header + "ACK".encode()
                         self.hash_send(packet)
-                        print(f"received {recv_seq}, sent ACK for {self.next_seq}")
+                        # print(f"received {recv_seq}, sent ACK for {self.next_seq}")
                         if recv_seq == self.next_seq:
                             with self.lock:
                                 self.next_seq += 1
@@ -114,7 +83,7 @@ class Streamer:
         """Note that data_bytes can be larger than one packet."""
         message = []
         """Chunk message into packets"""
-        max_packet_size = 1472-self.header_size
+        max_packet_size = 1452-self.header_size
         while len(data_bytes) >= max_packet_size:
             message.append(data_bytes[:max_packet_size])
             data_bytes = data_bytes[max_packet_size:]
@@ -129,11 +98,10 @@ class Streamer:
             self.hash_send(packet)
             self.no_ack.append([self.sent_seq + i, packet])
         """Check if ACK received within timeout interval"""
-        if time.time() - self.ack_time > 0.05:
+        if time.time() - self.ack_time > 0.25:
             for pair in self.no_ack:
                 self.hash_send(pair[1])
                 print(f"retrying for {pair[1][0]}")
-            self.ack_time = time.time()
         self.sent_seq += len(message)
 
     def recv(self) -> bytes:
@@ -150,7 +118,9 @@ class Streamer:
         """Cleans up. It should block (wait) until the Streamer is done with all
            the necessary ACKs and retransmissions"""
         while len(self.no_ack) != 0:
-            continue
+            for pair in self.no_ack:
+                self.hash_send(pair[1])
+                print(f"retrying for {pair[1][0]}")
         """Send FIN when all sent data ACKed"""
         header = struct.pack('i??', 0, False, True)  # int = 4 bytes, bool = 1 byte
         packet = header + "FIN".encode()
