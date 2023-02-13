@@ -5,11 +5,8 @@ from socket import INADDR_ANY
 import struct
 from concurrent.futures import ThreadPoolExecutor
 import time
-<<<<<<< Updated upstream
-=======
 import hashlib
 import threading
->>>>>>> Stashed changes
 
 
 class Streamer:
@@ -71,8 +68,6 @@ class Streamer:
         executor = ThreadPoolExecutor(max_workers=1)
         executor.submit(self.listener)
 
-<<<<<<< Updated upstream
-=======
     def hash_send(self, packet):
         raw = hashlib.sha1(packet).digest() + packet
         self.socket.sendto(raw, (self.dst_ip, self.dst_port))
@@ -115,7 +110,6 @@ class Streamer:
                 print("listener died!")
                 print(e)
 
->>>>>>> Stashed changes
     def send(self, data_bytes: bytes) -> None:
         """Note that data_bytes can be larger than one packet."""
         message = []
@@ -132,19 +126,6 @@ class Streamer:
             header = struct.pack('i??', self.sent_seq + i, False, False)  # int = 4 bytes, bool = 1 byte
             packet = header + message[i]
             packets.append(packet)
-<<<<<<< Updated upstream
-            self.no_ack.append(self.sent_seq + i + 1)
-            self.socket.sendto(packet, (self.dst_ip, self.dst_port))
-            message_acks.append([self.sent_seq + i + 1, time.time()])
-        """Wait until all messages are ACKed"""
-        while set([i[0] for i in message_acks]) & set(self.no_ack):
-            for i in [j for j in message_acks if j[0] in self.no_ack]:  # will have to change in part 5
-                if time.time()-i[1] > 0.25:
-                    self.socket.sendto(packets[i[0]-self.sent_seq-1], (self.dst_ip, self.dst_port))
-                    i[1] = time.time()
-            time.sleep(0.01)
-        """Remove ACKs of completed messages from self.acks"""
-=======
             self.hash_send(packet)
             self.no_ack.append([self.sent_seq + i, packet])
         """Check if ACK received within timeout interval"""
@@ -153,7 +134,6 @@ class Streamer:
                 self.hash_send(pair[1])
                 print(f"retrying for {pair[1][0]}")
             self.ack_time = time.time()
->>>>>>> Stashed changes
         self.sent_seq += len(message)
 
     def recv(self) -> bytes:
