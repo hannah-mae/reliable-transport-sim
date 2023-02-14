@@ -34,9 +34,11 @@ class Streamer:
         self.send_buff = []
         self.window_size = 10
         self.window = []
-        executor = ThreadPoolExecutor(max_workers=2)
+        self.num_acks = 0
+        executor = ThreadPoolExecutor(max_workers=3)
         executor.submit(self.listener)
         executor.submit(self.sender)
+        executor.submit(self.resend)
 
     def hash_send(self, packet):
         raw = hashlib.sha1(packet).digest() + packet
@@ -59,6 +61,9 @@ class Streamer:
                             if header[0] != self.ack_seq:
                                 self.ack_time = time.time()
                                 self.ack_seq = header[0]
+                                self.num_acks = 0
+                            else:
+                                self.num_acks += 1
                             self.no_ack = [packet for packet in self.no_ack if packet[0] >= self.ack_seq]
                     elif is_fin:  # if FIN, send FIN ACK and set fin_recv
                         self.fin_recv = True
@@ -80,27 +85,38 @@ class Streamer:
                 print("listener died!")
                 print(e)
 
-    def sender(self):
-        while not len(self.send_buff) == 0:
+    def resend(self):
+        while len(self.window) != 0:
             try:
-                """While first element has been ACKed or window isn't full, pop and send new pair"""
-                while len(self.window) < self.window_size or self.ack_seq > self.window[0][0]:
-                    if len(self.window) == self.window_size or \
-                            self.window_size > len(self.window) > 0 == len(self.send_buff):
-                        self.window.pop(0)
-                    if len(self.send_buff) != 0:
-                        new_pair = self.send_buff[0]
-                        self.send_buff.pop(0)
-                        self.window.append(new_pair)
-                        self.hash_send(new_pair[1])
                 """Check if ACK received within timeout interval"""
-                if time.time() - self.ack_time > 0.25:
+                if time.time() - self.ack_time > 0.1:
                     for pair in self.window:
                         self.hash_send(pair[1])
                         print(f"retrying for {pair[1][0]}")
             except Exception as e:
-                print("sender died!")
+                print("resend died!")
                 print(e)
+
+    def sender(self):
+        while not self.closed:
+            if not len(self.send_buff) == len(self.window) == 0:
+                try:
+                    while len(self.window) < self.window_size and len(self.send_buff) != 0:
+                        new_pair = self.send_buff[0]
+                        self.send_buff.pop(0)
+                        self.window.append(new_pair)
+                        self.hash_send(new_pair[1])
+                    """While first element has been ACKed or window isn't full, pop and send new pair"""
+                    while len(self.window) != 0 and self.ack_seq > self.window[0][0]:
+                        self.window.pop(0)
+                        if len(self.send_buff) != 0:
+                            new_pair = self.send_buff[0]
+                            self.send_buff.pop(0)
+                            self.window.append(new_pair)
+                            self.hash_send(new_pair[1])
+                except Exception as e:
+                    print("sender died!")
+                    print(e)
 
     def send(self, data_bytes: bytes) -> None:
         """Note that data_bytes can be larger than one packet."""
@@ -117,7 +133,7 @@ class Streamer:
             header = struct.pack('i??', self.sent_seq + i, False, False)  # int = 4 bytes, bool = 1 byte
             packet = header + message[i]
             self.send_buff.append([self.sent_seq + i, packet])
-        self.sent_seq += len(message)
+            self.sent_seq += 1
 
     def recv(self) -> bytes:
         """Blocks (waits) if no data is ready to be read from the connection."""
