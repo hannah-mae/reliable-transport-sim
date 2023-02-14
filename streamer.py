@@ -86,16 +86,21 @@ class Streamer:
                 print(e)
 
     def resend(self):
-        while len(self.window) != 0:
-            try:
-                """Check if ACK received within timeout interval"""
-                if time.time() - self.ack_time > 0.1:
-                    for pair in self.window:
-                        self.hash_send(pair[1])
-                        print(f"retrying for {pair[1][0]}")
-            except Exception as e:
-                print("resend died!")
-                print(e)
+        while not self.closed:
+            if len(self.window) != 0:
+                try:
+                    """Check if ACK received within timeout interval"""
+                    if time.time() - self.ack_time > 0.1:
+                        for pair in self.window:
+                            if self.num_acks > 3:
+                                self.num_acks = 0
+                                break
+                            self.hash_send(pair[1])
+                            print(f"retrying for {pair[1][0]}")
+                    time.sleep(0.1)
+                except Exception as e:
+                    print("resend died!")
+                    print(e)
 
     def sender(self):
         while not self.closed:
