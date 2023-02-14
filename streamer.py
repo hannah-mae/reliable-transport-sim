@@ -59,8 +59,8 @@ class Streamer:
                             if header[0] != self.ack_seq:
                                 self.ack_time = time.time()
                                 self.ack_seq = header[0]
-                            self.no_ack = [packet for packet in self.no_ack if packet[0] > self.ack_seq]
-                    elif is_fin: # if FIN, send FIN ACK and set fin_recv
+                            self.no_ack = [packet for packet in self.no_ack if packet[0] >= self.ack_seq]
+                    elif is_fin:  # if FIN, send FIN ACK and set fin_recv
                         self.fin_recv = True
                         header = struct.pack('i??', 0, True, True)
                         packet = header + "ACK".encode()
@@ -71,11 +71,11 @@ class Streamer:
                         header = struct.pack('i??', self.next_seq, True, False)  # int = 4 bytes, bool = 1 byte
                         packet = header + "ACK".encode()
                         self.hash_send(packet)
-                        # print(f"received {recv_seq}, sent ACK for {self.next_seq}")
                         if recv_seq == self.next_seq:
                             with self.lock:
                                 self.next_seq += 1
                                 self.recv_buff.append(recv_log)
+                        print(f"sent ACK for {self.next_seq}")
             except Exception as e:
                 print("listener died!")
                 print(e)
@@ -134,10 +134,11 @@ class Streamer:
            the necessary ACKs and retransmissions"""
         while len(self.no_ack) != 0:
             for pair in self.no_ack:
-                self.hash_send(pair[1])
-                print(f"retrying for {pair[1][0]}")
+                if self.ack_seq == pair[0]:
+                    self.hash_send(pair[1])
+                    print(f"retrying for {pair[1][0]}")
         """Send FIN when all sent data ACKed"""
-        header = struct.pack('i??', 0, False, True)  # int = 4 bytes, bool = 1 byte
+        header = struct.pack('i??', self.next_seq, False, True)  # int =  4 bytes, bool = 1 byte
         packet = header + "FIN".encode()
         self.hash_send(packet)
         time_sent = time.time()
