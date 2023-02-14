@@ -73,14 +73,14 @@ class Streamer:
                     else:
                         recv_seq = header[0]
                         recv_log = [recv_seq, data[self.header_size:]]
-                        header = struct.pack('i??', self.next_seq, True, False)  # int = 4 bytes, bool = 1 byte
-                        packet = header + "ACK".encode()
-                        self.hash_send(packet)
+                        send_header = struct.pack('i??', self.next_seq, True, False)  # int = 4 bytes, bool = 1 byte
+                        send_packet = header + "ACK".encode()
+                        self.hash_send(send_packet)
                         if recv_seq == self.next_seq:
                             with self.lock:
                                 self.next_seq += 1
                                 self.recv_buff.append(recv_log)
-                        print(f"sent ACK for {self.next_seq}")
+                        print(f"received {recv_seq}, sent ACK for {self.next_seq}")
             except Exception as e:
                 print("listener died!")
                 print(e)
