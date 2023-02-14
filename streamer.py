@@ -32,13 +32,14 @@ class Streamer:
         self.ack_time = 0
         self.no_ack = [] # remove once window implemented
         self.send_buff = []
-        self.window_size = 10
+        self.window_size = 10000
         self.window = []
         self.num_acks = 0
+        self.ack_buff = []
         executor = ThreadPoolExecutor(max_workers=3)
         executor.submit(self.listener)
         executor.submit(self.sender)
-        executor.submit(self.resend)
+        executor.submit(self.acks)
 
     def hash_send(self, packet):
         raw = hashlib.sha1(packet).digest() + packet
@@ -62,6 +63,7 @@ class Streamer:
                                 self.ack_time = time.time()
                                 self.ack_seq = header[0]
                                 self.num_acks = 0
+                                # print(f"new ack_seq is {self.ack_seq}")
                             else:
                                 self.num_acks += 1
                             self.no_ack = [packet for packet in self.no_ack if packet[0] >= self.ack_seq]
@@ -73,34 +75,17 @@ class Streamer:
                     else:
                         recv_seq = header[0]
                         recv_log = [recv_seq, data[self.header_size:]]
-                        send_header = struct.pack('i??', self.next_seq, True, False)  # int = 4 bytes, bool = 1 byte
-                        send_packet = header + "ACK".encode()
-                        self.hash_send(send_packet)
+                        # print(f"received {recv_seq}, sent ACK for {self.next_seq}")
                         if recv_seq == self.next_seq:
                             with self.lock:
                                 self.next_seq += 1
                                 self.recv_buff.append(recv_log)
-                        print(f"received {recv_seq}, sent ACK for {self.next_seq}")
+                        send_header = struct.pack('i??', self.next_seq, True, False)  # int = 4 bytes, bool = 1 byte
+                        send_packet = send_header + "ACK".encode()
+                        self.ack_buff.append(send_packet)
             except Exception as e:
                 print("listener died!")
                 print(e)
-
-    def resend(self):
-        while not self.closed:
-            if len(self.window) != 0:
-                try:
-                    """Check if ACK received within timeout interval"""
-                    if time.time() - self.ack_time > 0.1:
-                        for pair in self.window:
-                            if self.num_acks > 3:
-                                self.num_acks = 0
-                                break
-                            self.hash_send(pair[1])
-                            print(f"retrying for {pair[1][0]}")
-                    time.sleep(0.1)
-                except Exception as e:
-                    print("resend died!")
-                    print(e)
 
     def sender(self):
         while not self.closed:
@@ -119,8 +104,31 @@ class Streamer:
                             self.send_buff.pop(0)
                             self.window.append(new_pair)
                             self.hash_send(new_pair[1])
+                    if len(self.window):
+                        if time.time() - self.ack_time > 0.1:
+                            # print(f"window is {self.window}")
+                            # print(f"ack is {self.ack_seq}")
+                            for pair in self.window:
+                                if self.num_acks > 3:
+                                    self.hash_send(self.window[0][1])
+                                    self.num_acks = 0
+                                    break
+                                if self.ack_seq > self.window[0][0]:
+                                    break
+                                self.hash_send(pair[1])
+                                # print(f"retrying for {pair[1][0]}")
                 except Exception as e:
                     print("sender died!")
+                    print(e)
+
+    def acks(self):
+        while not self.closed:
+            if len(self.ack_buff):
+                try:
+                    self.hash_send(self.ack_buff[-1])
+                    self.ack_buff = []
+                except Exception as e:
+                    print("acks died!")
                     print(e)
 
     def send(self, data_bytes: bytes) -> None:
@@ -157,7 +165,8 @@ class Streamer:
             for pair in self.no_ack:
                 if self.ack_seq == pair[0]:
                     self.hash_send(pair[1])
-                    print(f"retrying for {pair[1][0]}")
+                    # print(f"retrying for {pair[1][0]}")
+
         """Send FIN when all sent data ACKed"""
         header = struct.pack('i??', self.next_seq, False, True)  # int =  4 bytes, bool = 1 byte
         packet = header + "FIN".encode()
