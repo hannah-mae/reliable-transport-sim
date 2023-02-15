@@ -31,7 +31,7 @@ class Streamer:
         self.lock = threading.Lock()
         self.ack_time = 0
         self.send_buff = []
-        self.window_size = 30
+        self.window_size = 100
         self.window = []
         self.num_acks = 0
         self.ack_buff = []
@@ -39,7 +39,6 @@ class Streamer:
         self.send_timer = 0
         self.recv_active = False
         self.recv_timer = 0
-        self.message_seq = 0
         self.message_recv = 0
         self.close_called = False
         executor = ThreadPoolExecutor(max_workers=4)
